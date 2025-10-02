@@ -29,11 +29,64 @@ let spectrumsData = {
 // 默认标题
 let defaultTitle = document.title;
 
+// ✅ 添加快捷键监听器初始化标志
+let shortcutListenersInitialized = false;
+
+/**
+ * ✅ 安全地初始化快捷键监听器
+ */
+const initShortcutListeners = () => {
+  if (shortcutListenersInitialized || !checkPlatform.electron()) return;
+
+  try {
+    const ipcRenderer = window.electron?.ipcRenderer;
+    if (!ipcRenderer) {
+      console.warn("Electron ipcRenderer 不可用，跳过快捷键监听初始化");
+      return;
+    }
+
+    // ✅ 在回调函数内部才调用 store，确保 Pinia 已初始化
+    ipcRenderer.on("shortcut-playOrPause", () => {
+      // 使用切换逻辑而不是仅播放
+      playOrPause();
+    });
+
+    ipcRenderer.on("shortcut-playPrev", () => {
+      changePlayIndex("prev");
+    });
+
+    ipcRenderer.on("shortcut-playNext", () => {
+      changePlayIndex("next");
+    });
+
+    ipcRenderer.on("shortcut-volumeUp", () => {
+      const status = siteStatus();
+      const volume = Math.min(1, status.playVolume + 0.1);
+      setVolume(volume);
+      status.playVolume = volume;
+    });
+
+    ipcRenderer.on("shortcut-volumeDown", () => {
+      const status = siteStatus();
+      const volume = Math.max(0, status.playVolume - 0.1);
+      setVolume(volume);
+      status.playVolume = volume;
+    });
+
+    shortcutListenersInitialized = true;
+    console.log("Player 快捷键监听器初始化完成");
+  } catch (error) {
+    console.warn("快捷键监听器初始化失败:", error);
+  }
+};
+
 /**
  * 初始化播放器
  */
 export const initPlayer = async (playNow = false) => {
   try {
+    // ✅ 在播放器初始化时初始化快捷键监听器
+    initShortcutListeners();
     // 停止播放器
     soundStop();
     // 获取基础数据
@@ -136,8 +189,6 @@ export const initPlayer = async (playNow = false) => {
       });
       return false;
     }
-    // 下一曲
-    // changePlayIndex();
     console.error("初始化音乐播放器出错：", error);
     $message.error("初始化音乐播放器出错");
   }
@@ -162,7 +213,7 @@ const getNormalSongUrl = async (id, status, playNow) => {
       // 调用解灰
       const unblockUrl = await getFromUnblockMusic({ id }, status, playNow);
       if (unblockUrl) {
-        status.playUseOtherSource = true; // 明确设置状态
+        status.playUseOtherSource = true;
         return unblockUrl;
       } else {
         return null;
@@ -256,7 +307,7 @@ export const createPlayer = async (src, autoPlay = true) => {
       console.log("开始替换音乐链接域名...");
       finalUrl = songUrl.replace(/m804\.music\.126\.net/g, 'm801.music.126.net')
                        .replace(/m704\.music\.126\.net/g, 'm701.music.126.net');
-      processedUrl = finalUrl;
+      processedUrl = finalUrl; // BYD什么石山
       console.log("替换后的音乐链接：", finalUrl);
     }
     console.log("播放地址：", processedUrl);
@@ -298,7 +349,7 @@ export const createPlayer = async (src, autoPlay = true) => {
       status.playLoading = false;
       // 发送歌曲名
       if (checkPlatform.electron()) {
-        electron.ipcRenderer.send("songNameChange", getPlaySongName());
+        window.electron?.ipcRenderer?.send("songNameChange", getPlaySongName());
       }
       // 听歌打卡
       if (isLogin() && !playSongData?.path) {
@@ -318,7 +369,7 @@ export const createPlayer = async (src, autoPlay = true) => {
       status.playState = true;
       // 发送状态
       if (checkPlatform.electron()) {
-        electron.ipcRenderer.send("songStateChange", true);
+        window.electron?.ipcRenderer?.send("songStateChange", true);
       }
       // 更改页面标题
       if (!checkPlatform.electron()) document.title = getPlaySongName();
@@ -331,7 +382,7 @@ export const createPlayer = async (src, autoPlay = true) => {
       status.playState = false;
       // 发送状态
       if (checkPlatform.electron()) {
-        electron.ipcRenderer.send("songStateChange", false);
+        window.electron?.ipcRenderer?.send("songStateChange", false);
       }
       // 更改页面标题
       if (!checkPlatform.electron()) document.title = defaultTitle || "SPlayer";
@@ -346,7 +397,7 @@ export const createPlayer = async (src, autoPlay = true) => {
       changePlayIndex();
       // 发送状态
       if (checkPlatform.electron()) {
-        electron.ipcRenderer.send("songStateChange", false);
+        window.electron?.ipcRenderer?.send("songStateChange", false);
       }
     });
     // 加载失败
@@ -655,7 +706,7 @@ const getSongLyricData = async (islocal, data) => {
       const lyricResponse = await getSongLyric(data?.id);
       const lyricLegacy = await getSongLyricLegacy(data?.id);
       const lyricTTML = await getSongTTML(data?.id);
-      if (lyricResponse?.original || lyricLegacy || lyricTTML?.content) {
+      if (lyricResponse?.original || lyricLegacy || lyricTTML) {
         // 使用parseLyric.js处理基础歌词
         const parsedLyric = parseLyric(lyricLegacy);
         // 使用lyric.ts处理AMLL格式
@@ -663,11 +714,10 @@ const getSongLyricData = async (islocal, data) => {
         // 为了使用TTML歌词添加一个开关
         const settings = siteSettings();
         // 处理TTML歌词
-        if (lyricTTML?.content && settings.useTTMLFormat) {
+        if (lyricTTML && settings.useTTMLFormat) {
           try {
-            const ttmlLyric = parseTTMLToAMLL(lyricTTML.content);
+            const ttmlLyric = parseTTMLToAMLL(lyricTTML);
             if (ttmlLyric && ttmlLyric.length > 0) {
-              // 将TTML歌词转换为AMLL格式，由于TTML包含逐字信息，应该存储在yrcAMData中
               amllLyric = {
                 lrcData: [],
                 yrcData: [],
